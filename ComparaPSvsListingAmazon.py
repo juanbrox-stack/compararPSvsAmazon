@@ -45,7 +45,7 @@ def main():
     file_ps = st.sidebar.file_uploader("Prestashop (.xlsx)", type=['xlsx'])
     file_amz = st.sidebar.file_uploader("Amazon (.xlsx)", type=['xlsx'])
     
-    col_ps = st.sidebar.text_input("Columna SKU Prestashop", value="Reference")
+    col_ps = st.sidebar.text_input("Columna SKU Prestashop", value="reference")
     col_amz = st.sidebar.text_input("Columna SKU Amazon", value="seller-sku")
 
     if file_ps and file_amz:
