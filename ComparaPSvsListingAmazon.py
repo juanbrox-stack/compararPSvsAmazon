@@ -1,73 +1,93 @@
 import streamlit as st
 import pandas as pd
+import re
 from io import BytesIO
 
-# Configuración de la página
-st.set_page_config(page_title="Comparador SKU: Prestashop vs Amazon", layout="wide")
+st.set_page_config(page_title="Comparador SKU: Limpieza y Formato", layout="wide")
+
+def formatear_y_limpiar_skus(df, columna):
+    """
+    Aplica limpieza, filtrado y normalización de ceros a la izquierda.
+    """
+    # 1. Limpieza básica inicial
+    df[columna] = df[columna].astype(str).str.strip()
+    
+    # 2. Filtros de exclusión (F, amzn., termina en punto)
+    mask_excluir = (
+        df[columna].str.startswith('F', na=False) | 
+        df[columna].str.startswith('amzn.', na=False) | 
+        df[columna].str.endswith('.', na=False)
+    )
+    df_temp = df[~mask_excluir].copy()
+
+    # 3. Lógica de normalización (Ceros a la izquierda)
+    # Si el SKU es puramente numérico y tiene entre 1 y 5 dígitos, le ponemos ceros
+    def normalizar(valor):
+        if valor.isdigit() and len(valor) <= 5:
+            return valor.zfill(5)
+        return valor
+
+    df_temp[columna] = df_temp[columna].apply(normalizar)
+
+    # 4. Filtro de validez final (Regex)
+    # ^A.* -> Empieza por A
+    # ^\d{5}$ -> Es un número de exactamente 5 dígitos (ya normalizados)
+    patron_valido = r'^(A.*|\d{5})$'
+    mask_valido = df_temp[columna].str.contains(patron_valido, regex=True, na=False)
+    
+    return df_temp[mask_valido]
 
 def main():
-    st.title("🔍 Comparador de Inventario: Amazon a Prestashop")
-    st.markdown("""
-    Esta herramienta identifica qué productos de tu **Listing de Amazon** no existen todavía en tu **Base de Datos de Prestashop**.
-    """)
-
-    # --- SECCIÓN DE CARGA DE ARCHIVOS ---
-    st.sidebar.header("Configuración de Archivos")
+    st.title("🔍 Comparador SKU con Normalización")
+    st.write("Esta versión corrige los SKUs numéricos para que siempre tengan 5 dígitos (ej: 123 -> 00123).")
     
-    file_ps = st.sidebar.file_uploader("1. Base de datos Prestashop (.xlsx)", type=['xlsx'])
-    col_ps = st.sidebar.text_input("Nombre columna SKU en Prestashop", value="Reference")
-
-    file_amz = st.sidebar.file_uploader("2. Listing de Amazon (.xlsx)", type=['xlsx'])
-    col_amz = st.sidebar.text_input("Nombre columna SKU en Amazon", value="seller-sku")
+    st.sidebar.header("Carga de Datos")
+    file_ps = st.sidebar.file_uploader("Prestashop (.xlsx)", type=['xlsx'])
+    file_amz = st.sidebar.file_uploader("Amazon (.xlsx)", type=['xlsx'])
+    
+    col_ps = st.sidebar.text_input("Columna SKU Prestashop", value="Reference")
+    col_amz = st.sidebar.text_input("Columna SKU Amazon", value="seller-sku")
 
     if file_ps and file_amz:
         try:
-            # Lectura de los archivos
             df_ps = pd.read_excel(file_ps)
             df_amz = pd.read_excel(file_amz)
 
-            # --- LÓGICA DE COMPARACIÓN ---
-            # 1. Limpiar los SKUs de Prestashop (quitar espacios y asegurar que son texto)
-            # Usamos un 'set' para que la búsqueda sea extremadamente rápida
-            skus_prestashop = set(df_ps[col_ps].astype(str).str.strip().unique())
+            # Aplicar limpieza y normalización a ambos (para que coincidan al comparar)
+            df_ps_limpio = formatear_y_limpiar_skus(df_ps, col_ps)
+            df_amz_limpio = formatear_y_limpiar_skus(df_amz, col_amz)
             
-            # 2. Identificar cuáles de Amazon NO están en ese set
-            # Filtramos el DataFrame de Amazon usando una máscara booleana
-            mask_faltantes = ~df_amz[col_amz].astype(str).str.strip().isin(skus_prestashop)
-            df_faltantes = df_amz[mask_faltantes].copy()
+            # Comparación
+            skus_ps = set(df_ps_limpio[col_ps].unique())
+            mask_faltantes = ~df_amz_limpio[col_amz].isin(skus_ps)
+            df_faltantes = df_amz_limpio[mask_faltantes].copy()
 
-            # --- VISUALIZACIÓN DE RESULTADOS ---
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Productos en Amazon", len(df_amz))
-            col2.metric("Productos en Prestashop", len(df_ps))
-            col3.metric("SKUs Faltantes", len(df_faltantes), delta_color="inverse")
+            # Visualización
+            st.divider()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Amazon Limpios", len(df_amz_limpio))
+            c2.metric("Prestashop Limpios", len(df_ps_limpio))
+            c3.metric("Faltantes Reales", len(df_faltantes))
 
             if not df_faltantes.empty:
-                st.subheader("📋 Lista de SKUs detectados como faltantes")
+                st.subheader("📋 Resultados listos para descargar")
                 st.dataframe(df_faltantes, use_container_width=True)
 
-                # --- GENERACIÓN DEL EXCEL DE SALIDA ---
                 output = BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_faltantes.to_excel(writer, index=False, sheet_name='SKUs_Faltantes')
+                    df_faltantes.to_excel(writer, index=False)
                 
-                excel_data = output.getvalue()
-
                 st.download_button(
-                    label="📥 Descargar Excel con faltantes",
-                    data=excel_data,
-                    file_name="skus_faltantes_en_prestashop.xlsx",
+                    label="📥 Descargar Excel con SKUs de 5 dígitos",
+                    data=output.getvalue(),
+                    file_name="skus_finales_corregidos.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
-                st.success("✅ ¡Enhorabuena! Todos los SKUs de Amazon ya existen en Prestashop.")
+                st.success("✅ Todo está al día.")
 
-        except KeyError as e:
-            st.error(f"Error: No se encontró la columna {e} en uno de los archivos. Revisa los nombres en la barra lateral.")
         except Exception as e:
-            st.error(f"Ocurrió un error inesperado: {e}")
-    else:
-        st.info("👋 Por favor, sube ambos archivos Excel en la barra lateral para comenzar la comparación.")
+            st.error(f"Error técnico: {e}")
 
 if __name__ == "__main__":
     main()
