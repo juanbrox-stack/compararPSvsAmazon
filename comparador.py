@@ -1,90 +1,83 @@
+import streamlit as st
 import pandas as pd
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-from tkinterdnd2 import DND_FILES, TkinterDnD
-import os
+import io
 
-class ComparadorApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Comparador de Referencias Amazon -> Prestashop")
-        self.root.geometry("600x450")
-        
-        self.file_presta = ""
-        self.file_amazon = ""
-        
-        # --- Selección de Base de Datos ---
-        ttk.Label(root, text="1. Selecciona el origen de datos:", font=('Arial', 10, 'bold')).pack(pady=10)
-        self.db_var = tk.StringVar(value="Turaco")
-        frame_radio = ttk.Frame(root)
-        frame_radio.pack()
-        for db in ["Turaco", "Jabiru", "Marabu"]:
-            ttk.Radiobutton(frame_radio, text=db, variable=self.db_var, value=db).side = tk.LEFT
-            ttk.Radiobutton(frame_radio, text=db, variable=self.db_var, value=db).pack(side=tk.LEFT, padx=10)
+# Configuración de la página
+st.set_page_config(page_title="Comparador Amazon vs Prestashop", layout="centered")
 
-        # --- Zonas de Arrastre ---
-        self.lbl_presta = ttk.Label(root, text="Arrastra aquí el Excel de PRESTASHOP", relief="groove", padding=20)
-        self.lbl_presta.pack(fill="x", padx=20, pady=10)
-        self.lbl_presta.drop_target_register(DND_FILES)
-        self.lbl_presta.dnd_bind('<<Drop>>', self.drop_presta)
+st.title("📦 Comparador de Referencias")
+st.write("Identifica productos de Amazon que aún no están en Prestashop.")
 
-        self.lbl_amazon = ttk.Label(root, text="Arrastra aquí el Excel de AMAZON", relief="groove", padding=20)
-        self.lbl_amazon.pack(fill="x", padx=20, pady=10)
-        self.lbl_amazon.drop_target_register(DND_FILES)
-        self.lbl_amazon.dnd_bind('<<Drop>>', self.drop_amazon)
+# --- 1. SELECCIÓN DE BASE DE DATOS ---
+db_opcion = st.selectbox(
+    "Selecciona la base de datos de Prestashop a procesar:",
+    ["Turaco", "Jabiru", "Marabu"]
+)
 
-        # --- Botón Procesar ---
-        self.btn_run = ttk.Button(root, text="Generar Excel de Faltantes", command=self.procesar)
-        self.btn_run.pack(pady=20)
+st.divider()
 
-    def drop_presta(self, event):
-        self.file_presta = event.data.strip('{}')
-        self.lbl_presta.config(text=f"Prestashop: {os.path.basename(self.file_presta)}")
+# --- 2. CARGA DE ARCHIVOS (Drag & Drop nativo) ---
+col1, col2 = st.columns(2)
 
-    def drop_amazon(self, event):
-        self.file_amazon = event.data.strip('{}')
-        self.lbl_amazon.config(text=f"Amazon: {os.path.basename(self.file_amazon)}")
+with col1:
+    archivo_presta = st.file_uploader("Fichero PRESTASHOP (.xlsx)", type=["xlsx"])
+with col2:
+    archivo_amazon = st.file_uploader("Fichero AMAZON (.xlsx)", type=["xlsx"])
 
-    def procesar(self):
-        if not self.file_presta or not self.file_amazon:
-            messagebox.showerror("Error", "Por favor, arrastra ambos archivos.")
-            return
+# --- 3. LÓGICA DE PROCESAMIENTO ---
+if archivo_presta and archivo_amazon:
+    try:
+        # Leer los excels
+        df_presta = pd.read_excel(archivo_presta)
+        df_amazon = pd.read_excel(archivo_amazon)
 
-        try:
-            # Leer archivos
-            df_presta = pd.read_excel(self.file_presta)
-            df_amazon = pd.read_excel(self.file_amazon)
+        # Limpiar nombres de columnas
+        df_presta.columns = [str(c).strip() for c in df_presta.columns]
+        df_amazon.columns = [str(c).strip() for c in df_amazon.columns]
 
-            # Normalizar nombres de columnas (quitar espacios)
-            df_presta.columns = [str(c).strip() for c in df_presta.columns]
-            df_amazon.columns = [str(c).strip() for c in df_amazon.columns]
-
-            # Identificar columnas de Amazon
-            # Columna A (0): SKU, Columna B (1): ASIN, Columna C (2): Título
+        # Validar columna 'reference' en Prestashop
+        if 'reference' not in df_presta.columns:
+            st.error("El archivo de Prestashop debe tener una columna llamada 'reference'")
+        else:
+            # Identificar columnas de Amazon por posición (A, B, C)
             col_sku_amz = df_amazon.columns[0]
             col_asin_amz = df_amazon.columns[1]
             col_title_amz = df_amazon.columns[2]
 
-            # Filtrar: Amazon SKUs que NO están en la columna 'reference' de Prestashop
-            # Usamos isin() y negamos con ~
-            faltantes = df_amazon[~df_amazon[col_sku_amz].astype(str).isin(df_presta['reference'].astype(str))]
+            # LÓGICA: Buscar SKUs de Amazon que NO están en 'reference' de Prestashop
+            referencias_presta = set(df_presta['reference'].astype(str))
+            
+            # Filtramos
+            faltantes = df_amazon[~df_amazon[col_sku_amz].astype(str).isin(referencias_presta)]
 
-            # Seleccionar solo las columnas solicitadas
-            resultado = faltantes[[col_sku_amz, col_title_amz, col_asin_amz]]
+            # Formatear resultado final
+            resultado = faltantes[[col_sku_amz, col_title_amz, col_asin_amz]].copy()
             resultado.columns = ['SKU', 'Título', 'ASIN']
 
-            # Guardar
-            save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", 
-                                                   title="Guardar listado de referencias a crear",
-                                                   initialfile=f"Crear_en_{self.db_var.get()}.xlsx")
-            if save_path:
-                resultado.to_excel(save_path, index=False)
-                messagebox.showinfo("Éxito", f"Se han encontrado {len(resultado)} referencias nuevas.")
+            st.divider()
+            st.success(f"¡Cruce completado para {db_opcion}!")
+            st.metric("Referencias faltantes encontradas", len(resultado))
 
-        except Exception as e:
-            messagebox.showerror("Error de proceso", f"Detalle: {str(e)}")
+            if len(resultado) > 0:
+                # Mostrar vista previa
+                st.dataframe(resultado.head(10), use_container_width=True)
 
-if __name__ == "__main__":
-    root = TkinterDnD.Tk()
-    app = ComparadorApp(root)
-    root.mainloop()
+                # --- 4. DESCARGA DEL RESULTADO ---
+                # Convertir DF a Excel en memoria
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    resultado.to_excel(writer, index=False, sheet_name='Faltantes')
+                
+                st.download_button(
+                    label="📥 Descargar Excel de Faltantes",
+                    data=output.getvalue(),
+                    file_name=f"crear_en_prestashop_{db_opcion.lower()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.info("Todas las referencias de Amazon ya existen en Prestashop.")
+
+    except Exception as e:
+        st.error(f"Error al procesar los archivos: {e}")
+else:
+    st.info("Por favor, sube ambos archivos Excel para comenzar el análisis.")
