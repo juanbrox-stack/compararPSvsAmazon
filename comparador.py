@@ -3,102 +3,123 @@ import pandas as pd
 import io
 
 # Configuración de la interfaz
-st.set_page_config(page_title="Comparador Amazon vs Prestashop", layout="wide")
+st.set_page_config(page_title="Comparador & Optimizador SEO", layout="wide", page_icon="📦")
+
+# --- FUNCIÓN DE RECORTE INTELIGENTE ---
+def recortar_limpio(texto, limite=128):
+    """
+    Recorta el texto al límite indicado buscando el último punto, coma o espacio
+    para no romper palabras ni dejar signos de puntuación huérfanos.
+    """
+    texto_str = str(texto).strip() if pd.notna(texto) else ""
+    
+    # Si ya cumple el límite, no tocar nada
+    if len(texto_str) <= limite:
+        return texto_str
+    
+    # Cortamos al límite para analizar dónde termina la última idea
+    recorte_previo = texto_str[:limite]
+    
+    # Buscar último punto o coma para un corte gramatical
+    ultimo_punto = recorte_previo.rfind('.')
+    ultima_coma = recorte_previo.rfind(',')
+    
+    posicion_corte = max(ultimo_punto, ultima_coma)
+    
+    if posicion_corte != -1 and posicion_corte > (limite * 0.8): 
+        # Si hay un signo y está cerca del final, cortamos ahí
+        return recorte_previo[:posicion_corte].strip()
+    else:
+        # Si no hay signos o están muy lejos, buscamos el último espacio
+        ultimo_espacio = recorte_previo.rfind(' ')
+        if ultimo_espacio != -1:
+            return recorte_previo[:ultimo_espacio].strip()
+        return recorte_previo
 
 # --- INTERFAZ STREAMLIT ---
-st.title("🚀 Comparador de Referencias (Versión Estable)")
+st.title("🚀 Comparador de Referencias & Optimizador SEO")
 st.markdown("""
-Esta versión realiza el cruce directo entre Amazon y Prestashop. 
-Identifica lo que está en Amazon pero no en tu base de datos, sin filtros de limpieza adicionales.
+Esta herramienta realiza dos tareas:
+1. **Cruce:** Identifica SKUs de Amazon que no están en Prestashop.
+2. **SEO:** Recorta los títulos de Amazon a **128 caracteres** de forma limpia para evitar errores en Prestashop.
 """)
 
-# --- BARRA LATERAL (SIDEBAR) ---
+# --- BARRA LATERAL ---
 st.sidebar.header("Configuración")
-
-db_opcion = st.sidebar.selectbox(
-    "1. Base de datos destino:", 
-    ["Turaco", "Jabiru", "Marabu"]
-)
-
-pais_opcion = st.sidebar.selectbox(
-    "2. Selecciona el País:",
-    ["ES", "FR", "IT", "DE", "PT", "UK"]
-)
+db_opcion = st.sidebar.selectbox("1. Base de datos destino:", ["Turaco", "Jabiru", "Marabu"])
+pais_opcion = st.sidebar.selectbox("2. Selecciona el País:", ["ES", "FR", "IT", "DE", "PT", "UK"])
 
 st.sidebar.divider()
-st.sidebar.write(f"**Destino:** {db_opcion}")
-st.sidebar.write(f"**País:** {pais_opcion}")
+st.sidebar.info(f"Salida: {db_opcion} | {pais_opcion} | Título máx: 128")
 
-# --- ÁREA PRINCIPAL ---
+# --- ÁREA DE CARGA ---
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("Archivo Prestashop")
-    archivo_presta = st.file_uploader("Subir Excel de Prestashop", type=["xlsx"], key="ps")
+    st.subheader("Fichero Prestashop")
+    archivo_presta = st.file_uploader("Subir Excel (columna 'reference')", type=["xlsx"], key="ps")
 with col2:
-    st.subheader("Archivo Amazon")
-    archivo_amazon = st.file_uploader("Subir Excel de Amazon", type=["xlsx"], key="amz")
+    st.subheader("Fichero Amazon")
+    archivo_amazon = st.file_uploader("Subir Excel (A: SKU, B: ASIN, C: Título)", type=["xlsx"], key="amz")
 
 if archivo_presta and archivo_amazon:
     try:
-        with st.spinner('Comparando referencias...'):
-            # Leer los archivos Excel
+        with st.spinner('Procesando y optimizando títulos...'):
             df_presta = pd.read_excel(archivo_presta)
             df_amazon = pd.read_excel(archivo_amazon)
 
-            # Normalizar nombres de columnas (quitar espacios en blanco)
+            # Normalizar columnas
             df_presta.columns = [str(c).strip() for c in df_presta.columns]
             df_amazon.columns = [str(c).strip() for c in df_amazon.columns]
 
             if 'reference' not in df_presta.columns:
-                st.error("❌ No se encontró la columna 'reference' en el archivo de Prestashop.")
+                st.error("❌ No se encontró la columna 'reference' en Prestashop.")
             else:
-                # Definir columnas de Amazon por su posición (A, B, C)
                 col_sku_amz = df_amazon.columns[0]
                 col_asin_amz = df_amazon.columns[1]
                 col_title_amz = df_amazon.columns[2]
 
-                # 1. Crear set de referencias existentes en Prestashop para comparar rápido
-                refs_existentes = set(df_presta['reference'].astype(str).str.strip())
+                # 1. Identificar referencias nuevas
+                refs_ps = set(df_presta['reference'].astype(str).str.strip())
+                faltantes = df_amazon[~df_amazon[col_sku_amz].astype(str).str.strip().isin(refs_ps)].copy()
 
-                # 2. Filtrar: Amazon SKUs que NO están en Prestashop
-                # No aplicamos filtros de limpieza (Regex), solo el cruce directo
-                faltantes = df_amazon[~df_amazon[col_sku_amz].astype(str).str.strip().isin(refs_existentes)].copy()
+                # 2. Aplicar el recorte inteligente de 128 caracteres al título
+                faltantes['Titulo_Limpio'] = faltantes[col_title_amz].apply(lambda x: recortar_limpio(x, 128))
 
-                # 3. Formatear el DataFrame final con las columnas solicitadas
-                resultado_final = faltantes[[col_sku_amz, col_title_amz, col_asin_amz]].copy()
-                resultado_final.columns = ['SKU', 'Título', 'ASIN']
+                # 3. Formatear DataFrame final
+                # Usamos el título optimizado en lugar del original
+                resultado = faltantes[[col_sku_amz, 'Titulo_Limpio', col_asin_amz]].copy()
+                resultado.columns = ['SKU', 'Título', 'ASIN']
                 
-                # Añadir columnas de valor fijo
-                resultado_final['Activo'] = 1
-                resultado_final['Marca'] = 'Cecotec'
-                resultado_final['Proveedor'] = 'Cecotec'
+                # Columnas fijas
+                resultado['Activo'] = 1
+                resultado['Marca'] = 'Cecotec'
+                resultado['Proveedor'] = 'Cecotec'
 
-                # --- MOSTRAR RESULTADOS ---
+                # --- RESULTADOS ---
                 st.divider()
-                st.success(f"Cruce completado con éxito.")
-                st.metric(f"Referencias nuevas para {pais_opcion}", len(resultado_final))
+                st.success(f"Cruce y optimización completados.")
+                st.metric(f"Referencias listas para {pais_opcion}", len(resultado))
 
-                if not resultado_final.empty:
-                    st.dataframe(resultado_final, use_container_width=True)
+                if not resultado.empty:
+                    st.write("### Vista previa (Título recortado a 128 caracteres)")
+                    st.dataframe(resultado.head(10), use_container_width=True)
                     
-                    # Generar el nombre del fichero con las siglas del país
-                    nombre_fichero = f"altas_{db_opcion.lower()}_{pais_opcion}.xlsx"
+                    # Nombre del fichero
+                    nombre_fichero = f"altas_{db_opcion.lower()}_{pais_opcion}_SEO.xlsx"
                     
-                    # Convertir a Excel para descarga
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        resultado_final.to_excel(writer, index=False, sheet_name='Altas')
+                    # Preparar descarga
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                        resultado.to_excel(writer, index=False, sheet_name='Altas_Optimizadas')
                     
                     st.download_button(
                         label=f"📥 Descargar Excel para {pais_opcion}",
-                        data=output.getvalue(),
+                        data=buffer.getvalue(),
                         file_name=nombre_fichero,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 else:
-                    st.info(f"No se han detectado referencias nuevas para {pais_opcion}.")
+                    st.info("No se han detectado referencias nuevas.")
 
     except Exception as e:
-        st.error(f"Error al procesar los archivos: {e}")
-else:
-    st.info("👋 Por favor, sube ambos archivos Excel para generar el listado de referencias.")
+        st.error(f"Error: {e}")
